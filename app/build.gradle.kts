@@ -14,7 +14,7 @@ val localProps = Properties().apply {
 
 android {
     namespace = "com.example.ihc_proyecto1theme"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.example.ihc_proyecto1theme"

@@ -26,18 +26,15 @@ class TablonViewModel : ViewModel() {
 
     private val repo = ObjetosRepository()
 
-    /** Filtros que ya están aplicados a la lista. */
     private val _aplicados = MutableStateFlow(FiltrosTablon())
     val aplicados: StateFlow<FiltrosTablon> = _aplicados.asStateFlow()
 
-    /** Filtros que se están editando en la hoja inferior (aún sin aplicar). */
     private val _borrador = MutableStateFlow(FiltrosTablon())
     val borrador: StateFlow<FiltrosTablon> = _borrador.asStateFlow()
 
     private val _lista = MutableStateFlow<EstadoLista>(EstadoLista.Cargando)
     val lista: StateFlow<EstadoLista> = _lista.asStateFlow()
 
-    /** Resultados que tendría el borrador (null = calculando). */
     private val _conteo = MutableStateFlow<Long?>(null)
     val conteo: StateFlow<Long?> = _conteo.asStateFlow()
 
@@ -95,7 +92,6 @@ class TablonViewModel : ViewModel() {
         }
     }
 
-    // ---- Hoja de filtros ----
     fun abrirFiltros() {
         _borrador.value = _aplicados.value
     }
@@ -113,7 +109,6 @@ class TablonViewModel : ViewModel() {
         recargar()
     }
 
-    // ---- Acciones rápidas del tablón ----
     fun cambiarOrden(orden: OrdenTablon) {
         if (_aplicados.value.orden == orden) return
         _aplicados.update { it.copy(orden = orden) }

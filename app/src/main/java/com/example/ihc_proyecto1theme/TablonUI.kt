@@ -1,5 +1,6 @@
 package com.example.ihc_proyecto1theme
 
+import android.util.Log
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -35,10 +36,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.AdminPanelSettings
 import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Campaign
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.FilterList
@@ -48,6 +50,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Place
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.SearchOff
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Badge
@@ -58,6 +61,7 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -75,7 +79,6 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberDrawerState
@@ -110,9 +113,6 @@ import kotlinx.coroutines.launch
 
 private val TextoPrincipal = Color(0xFF1F2937)
 
-// =====================================================================
-//  PANTALLA PRINCIPAL DEL TABLÓN
-// =====================================================================
 @Composable
 fun TablonScreen(
     navController: NavController,
@@ -127,6 +127,7 @@ fun TablonScreen(
     val aplicados by vm.aplicados.collectAsState()
     val catalogos by vm.catalogos.collectAsState()
     var mostrarFiltros by rememberSaveable { mutableStateOf(false) }
+    var objetoSeleccionado by remember { mutableStateOf<ObjetoModel?>(null) }
 
     val irA: (String) -> Unit = { ruta ->
         scope.launch { drawerState.close() }
@@ -149,7 +150,6 @@ fun TablonScreen(
                 ) {
                     Spacer(modifier = Modifier.height(24.dp))
 
-                    // Menú (3 rayitas) y actualizar
                     Box(modifier = Modifier.fillMaxWidth()) {
                         IconButton(
                             onClick = { scope.launch { drawerState.open() } },
@@ -174,7 +174,6 @@ fun TablonScreen(
                         }
                     }
 
-                    // Título + botón Filtros con contador
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -224,17 +223,14 @@ fun TablonScreen(
                         }
                     }
 
-                    // Recientes / General
                     Segmentado(
                         opciones = OrdenTablon.entries.map { it.texto },
                         seleccion = aplicados.orden.ordinal,
                         onClick = { vm.cambiarOrden(OrdenTablon.entries[it]) }
                     )
 
-                    // Chips de filtros activos (con X)
                     ChipsActivos(aplicados = aplicados, catalogos = catalogos, vm = vm)
 
-                    // Contenido según el estado
                     Box(modifier = Modifier.weight(1f)) {
                         when (val estado = lista) {
                             EstadoLista.Cargando -> ListaEsqueleto()
@@ -264,7 +260,7 @@ fun TablonScreen(
                                                 TarjetaObjeto(
                                                     objeto = objeto,
                                                     lugar = textoLugar(objeto, catalogos),
-                                                    onClick = { /* Fase 4: detalle */ }
+                                                    onClick = { objetoSeleccionado = objeto }
                                                 )
                                             }
                                         }
@@ -287,6 +283,18 @@ fun TablonScreen(
     if (mostrarFiltros) {
         HojaFiltros(vm = vm, catalogos = catalogos, onCerrar = { mostrarFiltros = false })
     }
+
+    objetoSeleccionado?.let { obj ->
+        HojaDetalleObjeto(
+            objeto = obj,
+            catalogos = catalogos,
+            onCerrar = { objetoSeleccionado = null },
+            onIrASolicitudes = {
+                objetoSeleccionado = null
+                navController.navigate("solicitudes")
+            }
+        )
+    }
 }
 
 private fun textoLugar(objeto: ObjetoModel, catalogos: Catalogos): String {
@@ -294,6 +302,246 @@ private fun textoLugar(objeto: ObjetoModel, catalogos: Catalogos): String {
     val partes = listOfNotNull(pabellon, objeto.lugarDetalle?.takeIf { it.isNotBlank() })
     if (partes.isNotEmpty()) return partes.joinToString(", ")
     return catalogos.sedes.firstOrNull { it.id == objeto.sedeId }?.nombre ?: "Ubicación no indicada"
+}
+
+// =====================================================================
+//  HOJA DE DETALLE Y RECLAMO DEL OBJETO
+// =====================================================================
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun HojaDetalleObjeto(
+    objeto: ObjetoModel,
+    catalogos: Catalogos,
+    onCerrar: () -> Unit,
+    onIrASolicitudes: () -> Unit
+) {
+    val repo = remember { ObjetosRepository() }
+    val scope = rememberCoroutineScope()
+    val estadoHoja = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    var enviando by remember { mutableStateOf(false) }
+    var errorMensaje by remember { mutableStateOf("") }
+    var solicitudEnviada by remember { mutableStateOf(false) }
+
+    val categoria = CategoriaObjeto.desde(objeto.categoria)
+    val estado = EstadoObjeto.desde(objeto.estado)
+    val sedeNombre = catalogos.sedes.firstOrNull { it.id == objeto.sedeId }?.nombre
+    val facultadNombre = catalogos.facultades.firstOrNull { it.id == objeto.facultadId }?.nombre
+    val lugarTexto = textoLugar(objeto, catalogos)
+
+    ModalBottomSheet(
+        onDismissRequest = onCerrar,
+        sheetState = estadoHoja,
+        containerColor = Color.White
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 28.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(categoria.icono, contentDescription = null, tint = Primario, modifier = Modifier.size(20.dp))
+                    Text(
+                        text = categoria.texto,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = Primario,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                IconButton(onClick = onCerrar) {
+                    Icon(Icons.Default.Close, contentDescription = "Cerrar detalle")
+                }
+            }
+
+            // Fotografía ampliada
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(220.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(Primario.copy(alpha = 0.08f)),
+                contentAlignment = Alignment.Center
+            ) {
+                val foto = objeto.fotos.firstOrNull()
+                if (foto != null) {
+                    SubcomposeAsyncImage(
+                        model = urlFoto(foto),
+                        contentDescription = "Foto de ${objeto.titulo}",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                        loading = {
+                            CircularProgressIndicator(color = Primario, modifier = Modifier.size(32.dp))
+                        },
+                        error = {
+                            Icon(categoria.icono, contentDescription = null, tint = Primario, modifier = Modifier.size(48.dp))
+                        }
+                    )
+                } else {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Icon(categoria.icono, contentDescription = null, tint = Primario, modifier = Modifier.size(48.dp))
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text("Sin fotografía adjunta", color = Neutro, style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = objeto.titulo,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = TextoPrincipal,
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(modifier = Modifier.width(8.dp))
+                InsigniaEstado(estado)
+            }
+
+            if (!objeto.descripcion.isNullOrBlank()) {
+                Text(
+                    text = objeto.descripcion,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = TextoPrincipal
+                )
+            }
+
+            HorizontalDivider(color = Color(0xFFE5E7EB))
+
+            // Detalles de ubicación y fecha
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Place, contentDescription = null, tint = Primario, modifier = Modifier.size(20.dp))
+                    Text(
+                        text = buildString {
+                            if (sedeNombre != null) append("$sedeNombre · ")
+                            append(lugarTexto)
+                        },
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = TextoPrincipal
+                    )
+                }
+
+                if (facultadNombre != null) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.School, contentDescription = null, tint = Primario, modifier = Modifier.size(20.dp))
+                        Text(
+                            text = "Facultad: $facultadNombre",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = TextoPrincipal
+                        )
+                    }
+                }
+
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Schedule, contentDescription = null, tint = Neutro, modifier = Modifier.size(20.dp))
+                    Text(
+                        text = "Reportado ${fechaRelativa(objeto.fechaHallazgo).lowercase()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Neutro
+                    )
+                }
+            }
+
+            if (errorMensaje.isNotEmpty()) {
+                Banner(texto = errorMensaje, color = ErrorRojo, icono = "⚠")
+            }
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            if (solicitudEnviada) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Exito.copy(alpha = 0.10f), RoundedCornerShape(14.dp))
+                        .padding(16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.CheckCircle, contentDescription = null, tint = Exito)
+                        Text(
+                            text = "¡Solicitud enviada!",
+                            color = Exito,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.titleMedium
+                        )
+                    }
+                    Text(
+                        text = "Tu reclamo entró en verificación. Podrás ver tu código y punto de recojo en la pestaña Solicitudes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = TextoPrincipal,
+                        textAlign = TextAlign.Center
+                    )
+                    Button(
+                        onClick = onIrASolicitudes,
+                        colors = ButtonDefaults.buttonColors(containerColor = Primario),
+                        shape = RoundedCornerShape(12.dp),
+                        modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
+                    ) {
+                        Text("Ir a mis solicitudes", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            } else {
+                Button(
+                    onClick = {
+                        errorMensaje = ""
+                        enviando = true
+                        scope.launch {
+                            try {
+                                repo.solicitarObjeto(objeto.id)
+                                solicitudEnviada = true
+                            } catch (e: IllegalStateException) {
+                                errorMensaje = e.message ?: "No se pudo procesar la solicitud."
+                            } catch (e: Exception) {
+                                Log.e("Tablon", "Error al crear solicitud", e)
+                                val msg = e.message.orEmpty()
+                                errorMensaje = if (msg.contains("row-level security", ignoreCase = true)) {
+                                    "No tienes permisos en la base de datos para crear solicitudes."
+                                } else {
+                                    "Error al enviar la solicitud. Intenta de nuevo."
+                                }
+                            } finally {
+                                enviando = false
+                            }
+                        }
+                    },
+                    enabled = !enviando && objeto.estado != EstadoObjeto.ENTREGADO.codigo,
+                    shape = RoundedCornerShape(14.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = Primario),
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
+                ) {
+                    if (enviando) {
+                        CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(10.dp))
+                        Text("Enviando solicitud...", color = Color.White, fontWeight = FontWeight.SemiBold)
+                    } else {
+                        Text(
+                            text = if (objeto.estado == EstadoObjeto.ENTREGADO.codigo) "Objeto ya entregado"
+                            else "¡Es mío! Solicitar devolución",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                }
+            }
+        }
+    }
 }
 
 // =====================================================================
@@ -807,7 +1055,6 @@ private fun HojaFiltros(vm: TablonViewModel, catalogos: Catalogos, onCerrar: () 
                             FiltroFecha.TREINTA_DIAS, FiltroFecha.RANGO
                         )[i]
                         if (nueva == borrador.fecha) {
-                            // Tocar de nuevo la opción activa la desactiva
                             vm.editarBorrador {
                                 it.copy(fecha = FiltroFecha.TODAS, rangoDesdeMs = null, rangoHastaMs = null)
                             }
@@ -881,7 +1128,6 @@ private fun HojaFiltros(vm: TablonViewModel, catalogos: Catalogos, onCerrar: () 
                 pidiendoRango = false
             },
             onCancelar = {
-                // Si no había un rango elegido, se deja el filtro de fecha sin usar
                 if (borrador.rangoDesdeMs == null) {
                     vm.editarBorrador { it.copy(fecha = FiltroFecha.TODAS) }
                 }
@@ -975,7 +1221,7 @@ private fun DialogoRango(onConfirmar: (Long, Long) -> Unit, onCancelar: () -> Un
 }
 
 // =====================================================================
-//  BARRA INFERIOR (se amplía a 5 ítems en la Fase 7)
+//  BARRA INFERIOR
 // =====================================================================
 @Composable
 fun BarraInferior(

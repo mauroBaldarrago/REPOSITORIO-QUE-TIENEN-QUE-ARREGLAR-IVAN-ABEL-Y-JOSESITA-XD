@@ -5,9 +5,12 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -18,22 +21,27 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -43,15 +51,19 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.credentials.ClearCredentialStateRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialException
 import androidx.lifecycle.viewmodel.compose.viewModel
-import androidx.navigation.NavController
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -63,38 +75,51 @@ import io.github.jan.supabase.auth.providers.Google
 import io.github.jan.supabase.auth.providers.builtin.IDToken
 import io.github.jan.supabase.auth.status.SessionStatus
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.security.MessageDigest
 import java.util.UUID
 
-val Primario = Color(0xFF0B5FA5)
+// Paleta institucional UNSA (Guinda y Dorado)
+val Primario = Color(0xFF6C1323)
+val GuindaOscuro = Color(0xFF4A0D18)
+val DoradoUnsa = Color(0xFFC59B27)
 val Exito = Color(0xFF1B7F4B)
 val Alerta = Color(0xFFB45309)
 val ErrorRojo = Color(0xFFB42318)
-val Neutro = Color(0xFF475569)
-val Fondo = Color(0xFFF5F7FA)
+val Neutro = Color(0xFF52494B)
+val Fondo = Color(0xFFFAF7F7)
+
+private val EsquemaColorUnsa = lightColorScheme(
+    primary = Primario,
+    onPrimary = Color.White,
+    secondary = DoradoUnsa,
+    onSecondary = Color(0xFF2B1D00),
+    tertiary = GuindaOscuro,
+    background = Fondo,
+    surface = Color.White,
+    onSurface = Color(0xFF1F1A1B),
+    error = ErrorRojo
+)
 
 const val WEB_CLIENT_ID = "111619497202-2a8q3udk3nhi61ndqkhbaiplae58cuhi.apps.googleusercontent.com"
 const val DOMINIO = "@unsa.edu.pe"
 
+private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
         setContent {
-            MaterialTheme {
+            MaterialTheme(colorScheme = EsquemaColorUnsa) {
                 AppRaiz()
             }
         }
     }
 }
 
-// =====================================================================
-//  RAÍZ: decide qué se muestra según la sesión de Supabase
-//   - leyendo sesión  -> pantalla de carga
-//   - con sesión      -> app (según el rol)
-//   - sin sesión      -> login
-//  Al iniciar o cerrar sesión la pantalla cambia sola, sin navegar a mano.
-// =====================================================================
 @Composable
 fun AppRaiz() {
     val estadoSesion by SupabaseClient.client.auth.sessionStatus.collectAsState()
@@ -108,18 +133,16 @@ fun AppRaiz() {
 
 @Composable
 fun AppAutenticada(userId: String) {
-    // La clave evita reutilizar el perfil de otra cuenta si se cambia de usuario
     val sesionVm: SesionViewModel = viewModel(key = "sesion_$userId")
     val estado by sesionVm.estado.collectAsState()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     when (val e = estado) {
         EstadoPerfil.Cargando -> PantallaCarga()
         is EstadoPerfil.Error -> PantallaErrorPerfil(
             mensaje = e.mensaje,
             onReintentar = { sesionVm.cargar() },
-            onSalir = { cerrarSesion(context, scope) }
+            onSalir = { cerrarSesion(context) }
         )
         is EstadoPerfil.Listo -> NavegacionPorRol(e.perfil)
     }
@@ -129,11 +152,9 @@ fun AppAutenticada(userId: String) {
 fun NavegacionPorRol(perfil: PerfilModel) {
     val navController = rememberNavController()
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     val rol = Rol.desde(perfil.rol)
-    val salir: () -> Unit = { cerrarSesion(context, scope) }
+    val salir: () -> Unit = { cerrarSesion(context) }
 
-    // Pantalla de inicio según el rol
     val inicio = when (rol) {
         Rol.ESTUDIANTE -> "tablon"
         Rol.VIGILANTE -> "vigilante"
@@ -145,62 +166,74 @@ fun NavegacionPorRol(perfil: PerfilModel) {
             TablonScreen(navController = navController, perfil = perfil, onCerrarSesion = salir)
         }
         composable("reportar") {
-            PantallaPendiente("Reportar objeto") { navController.popBackStack() }
+            ReportarScreen(
+                perfil = perfil,
+                onVolver = { navController.popBackStack() },
+                onReporteExitoso = { navController.popBackStack() }
+            )
         }
         composable("solicitudes") {
-            PantallaPendiente("Solicitudes") { navController.popBackStack() }
+            SolicitudesScreen(
+                onVolver = { navController.popBackStack() }
+            )
         }
         composable("vigilante") {
             if (rol.esStaff) {
                 PantallaRol(
                     titulo = "Panel de vigilancia",
-                    detalle = "Aquí irán \"Por recibir\", \"Por entregar\", el escáner QR y el mapa de casilleros (Fase 8).",
+                    detalle = "Gestión de objetos por recibir, entregas, escáner QR y mapa de casilleros.",
                     perfil = perfil,
                     onVerTablon = { navController.navigate("tablon") },
                     onSalir = salir
                 )
+            } else {
+                LaunchedEffect(Unit) {
+                    navController.navigate("tablon") {
+                        popUpTo("vigilante") { inclusive = true }
+                    }
+                }
             }
         }
         composable("admin") {
             if (rol == Rol.ADMIN) {
                 PantallaRol(
                     titulo = "Panel de administración",
-                    detalle = "Aquí irán la gestión de roles, las denuncias y los catálogos (Fase 9).",
+                    detalle = "Gestión de roles institucionales, denuncias y catálogos de sedes.",
                     perfil = perfil,
                     onVerTablon = { navController.navigate("tablon") },
                     onSalir = salir
                 )
+            } else {
+                LaunchedEffect(Unit) {
+                    navController.navigate("tablon") {
+                        popUpTo("admin") { inclusive = true }
+                    }
+                }
             }
         }
     }
 }
 
-/** Cierra la sesión de Google y de Supabase; la raíz muestra el login automáticamente. */
-fun cerrarSesion(context: Context, scope: CoroutineScope) {
-    scope.launch {
-        // Primero Google; la sesión de Supabase va al final porque al cerrarla
-        // esta pantalla sale de composición y el scope se cancela.
+fun cerrarSesion(context: Context) {
+    appScope.launch {
         try {
-            CredentialManager.create(context).clearCredentialState(
-                androidx.credentials.ClearCredentialStateRequest()
-            )
+            CredentialManager.create(context).clearCredentialState(ClearCredentialStateRequest())
         } catch (e: Exception) {
-            Log.e("Login", "Error al limpiar credenciales", e)
+            Log.e("Login", "Error al limpiar credenciales de Google", e)
         }
         try {
             SupabaseClient.client.auth.signOut()
         } catch (e: Exception) {
-            Log.e("Login", "Error al cerrar sesión", e)
+            Log.e("Login", "Error al cerrar sesión en Supabase", e)
         }
     }
 }
 
-// =====================================================================
-//  LOGIN CON GOOGLE (solo @unsa.edu.pe)
-// =====================================================================
 sealed class ResultadoLogin {
     data class Exitoso(val correo: String) : ResultadoLogin()
     object DominioInvalido : ResultadoLogin()
+    object ErrorConfiguracionGoogle : ResultadoLogin()
+    object ErrorServidor : ResultadoLogin()
     object Cancelado : ResultadoLogin()
     object Fallo : ResultadoLogin()
 }
@@ -217,11 +250,11 @@ suspend fun iniciarSesionConGoogle(context: Context): ResultadoLogin {
     return try {
         val (nonceCrudo, nonceHash) = generarNonce()
 
-        // El filtro de dominio hace que Google solo muestre cuentas @unsa.edu.pe
         val opcionGoogle = GetSignInWithGoogleOption.Builder(WEB_CLIENT_ID)
             .setHostedDomainFilter(DOMINIO.removePrefix("@"))
             .setNonce(nonceHash)
             .build()
+
         val request = GetCredentialRequest.Builder()
             .addCredentialOption(opcionGoogle)
             .build()
@@ -230,7 +263,6 @@ suspend fun iniciarSesionConGoogle(context: Context): ResultadoLogin {
         val credencial = GoogleIdTokenCredential.createFrom(resultado.credential.data)
         val correo = credencial.id
 
-        // Segunda barrera en el teléfono (la tercera es el trigger de la base de datos)
         if (!correo.endsWith(DOMINIO, ignoreCase = true)) {
             return ResultadoLogin.DominioInvalido
         }
@@ -241,17 +273,25 @@ suspend fun iniciarSesionConGoogle(context: Context): ResultadoLogin {
             nonce = nonceCrudo
         }
         ResultadoLogin.Exitoso(correo)
-    } catch (e: androidx.credentials.exceptions.GetCredentialCancellationException) {
-        ResultadoLogin.Cancelado
-    } catch (e: Exception) {
-        Log.e("Login", "Error al iniciar sesión", e)
-        val mensaje = e.message.orEmpty()
-        if (mensaje.contains("unsa.edu.pe", ignoreCase = true) ||
-            mensaje.contains("Database error", ignoreCase = true)
-        ) {
-            ResultadoLogin.DominioInvalido
+
+    } catch (e: GetCredentialCancellationException) {
+        val detalle = e.errorMessage?.toString().orEmpty()
+        Log.e("Login", "Flujo cancelado o bloqueado por Play Services: $detalle", e)
+        if (detalle.contains("reauth failed", ignoreCase = true) || detalle.contains("[16]")) {
+            ResultadoLogin.ErrorConfiguracionGoogle
         } else {
-            ResultadoLogin.Fallo
+            ResultadoLogin.Cancelado
+        }
+    } catch (e: GetCredentialException) {
+        Log.e("Login", "Error de CredentialManager (${e.type}): ${e.errorMessage}", e)
+        ResultadoLogin.ErrorConfiguracionGoogle
+    } catch (e: Exception) {
+        Log.e("Login", "Error al autenticar con Supabase", e)
+        val mensaje = e.message.orEmpty()
+        when {
+            mensaje.contains("unsa.edu.pe", ignoreCase = true) -> ResultadoLogin.DominioInvalido
+            mensaje.contains("Database error", ignoreCase = true) -> ResultadoLogin.ErrorServidor
+            else -> ResultadoLogin.Fallo
         }
     }
 }
@@ -267,41 +307,78 @@ fun LoginScreen() {
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
                 .padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Image(
-                painter = painterResource(id = R.drawable.logo_unsa),
-                contentDescription = "Logo UNSA",
-                modifier = Modifier.size(140.dp)
-            )
+            Surface(
+                color = Primario.copy(alpha = 0.08f),
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, DoradoUnsa.copy(alpha = 0.55f))
+            ) {
+                Text(
+                    text = "UNIVERSIDAD NACIONAL DE SAN AGUSTÍN",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Primario,
+                    letterSpacing = 0.8.sp,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                )
+            }
 
-            Spacer(modifier = Modifier.height(16.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Box(
+                modifier = Modifier
+                    .size(152.dp)
+                    .background(Color.White, CircleShape)
+                    .border(2.5.dp, DoradoUnsa, CircleShape)
+                    .padding(12.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.logo_unsa),
+                    contentDescription = "Escudo de la Universidad Nacional de San Agustín",
+                    modifier = Modifier.size(124.dp)
+                )
+            }
+
+            Spacer(modifier = Modifier.height(18.dp))
 
             Text(
                 text = "Objetos Perdidos",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
-                color = Color(0xFF1F2937)
+                color = Color(0xFF1F1A1B)
             )
             Text(
                 text = "UNSA",
                 style = MaterialTheme.typography.headlineLarge,
-                fontWeight = FontWeight.Bold,
-                color = Primario
+                fontWeight = FontWeight.ExtraBold,
+                color = Primario,
+                letterSpacing = 1.5.sp
             )
 
-            Spacer(modifier = Modifier.height(32.dp))
+            Spacer(modifier = Modifier.height(10.dp))
+
+            HorizontalDivider(
+                modifier = Modifier.width(64.dp),
+                thickness = 3.dp,
+                color = DoradoUnsa
+            )
+
+            Spacer(modifier = Modifier.height(20.dp))
 
             Text(
-                text = "Reporta objetos perdidos y encuentra los que otros han hallado dentro de la universidad.",
+                text = "Reporta objetos perdidos y recupera los que han sido hallados dentro de las sedes universitarias.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = Neutro,
                 textAlign = TextAlign.Center
             )
 
-            Spacer(modifier = Modifier.height(20.dp))
+            Spacer(modifier = Modifier.height(28.dp))
 
             Button(
                 onClick = {
@@ -309,16 +386,21 @@ fun LoginScreen() {
                     cargando = true
                     scope.launch {
                         when (iniciarSesionConGoogle(context)) {
-                            // Si el inicio es exitoso, la raíz detecta la sesión y cambia de pantalla
                             is ResultadoLogin.Exitoso -> Unit
                             ResultadoLogin.DominioInvalido -> {
-                                mensajeError = "Usa tu correo institucional $DOMINIO"
+                                mensajeError = "Acceso restringido: usa tu correo institucional $DOMINIO"
+                            }
+                            ResultadoLogin.ErrorConfiguracionGoogle -> {
+                                mensajeError = "Error con tu cuenta de Google en este dispositivo. Verifica tu sesión o PIN de bloqueo."
+                            }
+                            ResultadoLogin.ErrorServidor -> {
+                                mensajeError = "Tu correo es válido, pero hubo un error al registrar tu perfil en el servidor."
                             }
                             ResultadoLogin.Cancelado -> {
                                 mensajeError = ""
                             }
                             ResultadoLogin.Fallo -> {
-                                mensajeError = "No se pudo iniciar sesión. Intenta de nuevo"
+                                mensajeError = "No se pudo conectar para iniciar sesión. Revisa tu internet e intenta de nuevo."
                             }
                         }
                         cargando = false
@@ -326,22 +408,26 @@ fun LoginScreen() {
                 },
                 enabled = !cargando,
                 shape = RoundedCornerShape(16.dp),
+                border = BorderStroke(1.dp, DoradoUnsa.copy(alpha = 0.6f)),
                 colors = ButtonDefaults.buttonColors(containerColor = Primario),
-                modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 54.dp)
+                    .semantics { contentDescription = "Ingresar con cuenta institucional UNSA" }
             ) {
                 if (cargando) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(20.dp),
                         strokeWidth = 2.dp,
-                        color = Color.White
+                        color = DoradoUnsa
                     )
                     Spacer(modifier = Modifier.width(10.dp))
                     Text("Ingresando...", color = Color.White, fontWeight = FontWeight.SemiBold)
                 } else {
                     Text(
-                        "Ingresar",
+                        text = "Ingresar con Google",
                         color = Color.White,
-                        fontSize = 18.sp,
+                        fontSize = 17.sp,
                         fontWeight = FontWeight.SemiBold
                     )
                     Spacer(modifier = Modifier.width(12.dp))
@@ -353,12 +439,21 @@ fun LoginScreen() {
                     ) {
                         Image(
                             painter = painterResource(id = R.drawable.ic_google),
-                            contentDescription = "Google",
+                            contentDescription = null,
                             modifier = Modifier.size(18.dp)
                         )
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = "Exclusivo para correos institucionales $DOMINIO",
+                style = MaterialTheme.typography.labelMedium,
+                color = Neutro,
+                textAlign = TextAlign.Center
+            )
 
             if (mensajeError.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(16.dp))
@@ -372,13 +467,15 @@ fun LoginScreen() {
     }
 }
 
-// =====================================================================
-//  PANTALLAS AUXILIARES
-// =====================================================================
 @Composable
 fun PantallaCarga() {
     FondoDecorado {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .semantics { contentDescription = "Cargando sesión" },
+            contentAlignment = Alignment.Center
+        ) {
             CircularProgressIndicator(color = Primario)
         }
     }
@@ -388,7 +485,11 @@ fun PantallaCarga() {
 fun PantallaErrorPerfil(mensaje: String, onReintentar: () -> Unit, onSalir: () -> Unit) {
     FondoDecorado {
         Column(
-            modifier = Modifier.fillMaxSize().padding(32.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
@@ -404,8 +505,9 @@ fun PantallaErrorPerfil(mensaje: String, onReintentar: () -> Unit, onSalir: () -
             OutlinedButton(
                 onClick = onSalir,
                 shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, Primario.copy(alpha = 0.4f)),
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
-            ) { Text("Cerrar sesión") }
+            ) { Text("Cerrar sesión", color = Primario) }
         }
     }
 }
@@ -420,13 +522,28 @@ fun PantallaRol(
 ) {
     FondoDecorado {
         Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(24.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center
         ) {
-            Text(titulo, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center)
+            Text(
+                text = titulo,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF1F1A1B),
+                textAlign = TextAlign.Center
+            )
             Spacer(modifier = Modifier.height(8.dp))
-            Text("${Rol.desde(perfil.rol).texto} · ${perfil.email}", color = Primario, fontWeight = FontWeight.SemiBold, textAlign = TextAlign.Center)
+            Text(
+                text = "${Rol.desde(perfil.rol).texto} · ${perfil.email}",
+                color = Primario,
+                fontWeight = FontWeight.SemiBold,
+                textAlign = TextAlign.Center
+            )
             Spacer(modifier = Modifier.height(12.dp))
             Text(detalle, color = Neutro, textAlign = TextAlign.Center)
             Spacer(modifier = Modifier.height(24.dp))
@@ -440,27 +557,9 @@ fun PantallaRol(
             OutlinedButton(
                 onClick = onSalir,
                 shape = RoundedCornerShape(12.dp),
+                border = BorderStroke(1.dp, ErrorRojo.copy(alpha = 0.4f)),
                 modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp)
             ) { Text("Cerrar sesión", color = ErrorRojo) }
-        }
-    }
-}
-
-@Composable
-fun PantallaPendiente(titulo: String, onVolver: () -> Unit) {
-    FondoDecorado {
-        Column(
-            modifier = Modifier.fillMaxSize().padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center
-        ) {
-            Text(titulo, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(8.dp))
-            Text("Pantalla en construcción", color = Neutro)
-            Spacer(modifier = Modifier.height(24.dp))
-            OutlinedButton(onClick = onVolver) {
-                Text("← Volver al tablón")
-            }
         }
     }
 }
@@ -470,20 +569,20 @@ fun Banner(texto: String, color: Color, icono: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(color.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .background(color.copy(alpha = 0.10f), RoundedCornerShape(12.dp))
+            .border(1.dp, color.copy(alpha = 0.25f), RoundedCornerShape(12.dp))
             .padding(12.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Text(text = icono, color = color, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-        Text(text = texto, color = color, fontWeight = FontWeight.SemiBold)
+        Text(
+            text = texto,
+            color = color,
+            fontWeight = FontWeight.SemiBold,
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun LoginPreview() {
-    MaterialTheme { Banner("Vista previa", Exito, "✓") }
 }
 
 @Composable
@@ -500,7 +599,7 @@ fun FondoDecorado(content: @Composable BoxScope.() -> Unit) {
                 center = Offset(x = 0f, y = size.height * 0.02f)
             )
             drawCircle(
-                color = Primario.copy(alpha = 0.06f),
+                color = DoradoUnsa.copy(alpha = 0.10f),
                 radius = size.width * 0.35f,
                 center = Offset(x = size.width * 0.15f, y = -size.height * 0.02f)
             )
@@ -510,11 +609,19 @@ fun FondoDecorado(content: @Composable BoxScope.() -> Unit) {
                 center = Offset(x = size.width, y = size.height * 0.98f)
             )
             drawCircle(
-                color = Primario.copy(alpha = 0.05f),
+                color = DoradoUnsa.copy(alpha = 0.09f),
                 radius = size.width * 0.35f,
                 center = Offset(x = size.width * 0.85f, y = size.height * 1.02f)
             )
         }
         content()
+    }
+}
+
+@Preview(showBackground = true)
+@Composable
+fun LoginPreview() {
+    MaterialTheme(colorScheme = EsquemaColorUnsa) {
+        LoginScreen()
     }
 }
