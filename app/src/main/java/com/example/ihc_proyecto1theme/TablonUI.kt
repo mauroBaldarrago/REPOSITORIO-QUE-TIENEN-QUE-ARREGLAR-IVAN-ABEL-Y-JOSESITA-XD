@@ -94,6 +94,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
@@ -394,6 +395,21 @@ private fun HojaDetalleObjeto(
                         Text("Sin fotografía adjunta", color = Neutro, style = MaterialTheme.typography.bodySmall)
                     }
                 }
+
+                // Marca visual para evitar confusiones con objetos que ya tienen un reclamo.
+                if (estado == EstadoObjeto.RECLAMADO || estado == EstadoObjeto.ENTREGADO) {
+                    Text(
+                        text = if (estado == EstadoObjeto.ENTREGADO) "ENTREGADO" else "RECLAMADO",
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .rotate(-18f)
+                            .background(Color.Black.copy(alpha = 0.58f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 22.dp, vertical = 10.dp),
+                        color = Color.White,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 22.sp
+                    )
+                }
             }
 
             Row(
@@ -520,7 +536,7 @@ private fun HojaDetalleObjeto(
                             }
                         }
                     },
-                    enabled = !enviando && objeto.estado != EstadoObjeto.ENTREGADO.codigo,
+                    enabled = !enviando && estado != EstadoObjeto.RECLAMADO && estado != EstadoObjeto.ENTREGADO,
                     shape = RoundedCornerShape(14.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = Primario),
                     modifier = Modifier.fillMaxWidth().heightIn(min = 52.dp)
@@ -531,8 +547,11 @@ private fun HojaDetalleObjeto(
                         Text("Enviando solicitud...", color = Color.White, fontWeight = FontWeight.SemiBold)
                     } else {
                         Text(
-                            text = if (objeto.estado == EstadoObjeto.ENTREGADO.codigo) "Objeto ya entregado"
-                            else "¡Es mío! Solicitar devolución",
+                            text = when (estado) {
+                                EstadoObjeto.RECLAMADO -> "Objeto ya reclamado"
+                                EstadoObjeto.ENTREGADO -> "Objeto ya entregado"
+                                else -> "¡Es mío! Solicitar devolución"
+                            },
                             color = Color.White,
                             fontSize = 16.sp,
                             fontWeight = FontWeight.SemiBold

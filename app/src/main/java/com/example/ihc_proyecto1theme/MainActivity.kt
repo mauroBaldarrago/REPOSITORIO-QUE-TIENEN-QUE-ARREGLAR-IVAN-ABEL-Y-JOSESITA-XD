@@ -1,6 +1,7 @@
 package com.example.ihc_proyecto1theme
 
 import android.content.Context
+import androidx.compose.runtime.SideEffect
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -78,6 +79,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.io.IOException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.security.MessageDigest
 import java.util.UUID
 
@@ -124,10 +128,25 @@ class MainActivity : ComponentActivity() {
 fun AppRaiz() {
     val estadoSesion by SupabaseClient.client.auth.sessionStatus.collectAsState()
 
-    when (val estado = estadoSesion) {
-        is SessionStatus.Initializing -> PantallaCarga()
-        is SessionStatus.Authenticated -> AppAutenticada(userId = estado.session.user?.id ?: "")
-        else -> LoginScreen()
+    // Último usuario con sesión activa. Se guarda con rememberSaveable, así sobrevive
+    // a rotaciones y a que Android cierre la app mientras está abierta la cámara.
+    var ultimoUsuario by rememberSaveable { mutableStateOf<String?>(null) }
+
+    // Mientras Supabase refresca la sesión (Initializing o RefreshFailure) se mantiene
+    // la app en pantalla. Solo se vuelve al login si la sesión realmente se cerró.
+    val usuarioActivo: String? = when (val estado = estadoSesion) {
+        is SessionStatus.Authenticated -> estado.session.user?.id ?: ""
+        is SessionStatus.NotAuthenticated -> null
+        else -> ultimoUsuario
+    }
+    SideEffect { ultimoUsuario = usuarioActivo }
+
+    // Importante: AppAutenticada se llama en UN solo lugar. Si se llamara desde dos
+    // ramas distintas, Compose destruiría y recrearía toda la navegación al cambiar de rama.
+    when {
+        usuarioActivo != null -> AppAutenticada(userId = usuarioActivo)
+        estadoSesion is SessionStatus.NotAuthenticated -> LoginScreen()
+        else -> PantallaCarga()
     }
 }
 
@@ -234,6 +253,8 @@ sealed class ResultadoLogin {
     object DominioInvalido : ResultadoLogin()
     object ErrorConfiguracionGoogle : ResultadoLogin()
     object ErrorServidor : ResultadoLogin()
+    object ErrorConexion : ResultadoLogin()
+    object ErrorConfiguracionSupabase : ResultadoLogin()
     object Cancelado : ResultadoLogin()
     object Fallo : ResultadoLogin()
 }
@@ -247,6 +268,12 @@ private fun generarNonce(): Pair<String, String> {
 }
 
 suspend fun iniciarSesionConGoogle(context: Context): ResultadoLogin {
+    // Verifica que Supabase tenga sus datos de conexión configurados.
+    if (BuildConfig.SUPABASE_URL.isBlank() || BuildConfig.SUPABASE_ANON_KEY.isBlank()) {
+        Log.e("Login", "Faltan SUPABASE_URL o SUPABASE_ANON_KEY en local.properties")
+        return ResultadoLogin.ErrorConfiguracionSupabase
+    }
+
     return try {
         val (nonceCrudo, nonceHash) = generarNonce()
 
@@ -286,11 +313,14 @@ suspend fun iniciarSesionConGoogle(context: Context): ResultadoLogin {
         Log.e("Login", "Error de CredentialManager (${e.type}): ${e.errorMessage}", e)
         ResultadoLogin.ErrorConfiguracionGoogle
     } catch (e: Exception) {
-        Log.e("Login", "Error al autenticar con Supabase", e)
+        Log.e("Login", "Error al iniciar sesión", e)
         val mensaje = e.message.orEmpty()
+
         when {
             mensaje.contains("unsa.edu.pe", ignoreCase = true) -> ResultadoLogin.DominioInvalido
             mensaje.contains("Database error", ignoreCase = true) -> ResultadoLogin.ErrorServidor
+            e is UnknownHostException || e is SocketTimeoutException || e is IOException ->
+                ResultadoLogin.ErrorConexion
             else -> ResultadoLogin.Fallo
         }
     }
@@ -396,11 +426,17 @@ fun LoginScreen() {
                             ResultadoLogin.ErrorServidor -> {
                                 mensajeError = "Tu correo es válido, pero hubo un error al registrar tu perfil en el servidor."
                             }
+                            ResultadoLogin.ErrorConexion -> {
+                                mensajeError = "No se pudo contactar al servidor. Verifica tu conexión e inténtalo nuevamente."
+                            }
+                            ResultadoLogin.ErrorConfiguracionSupabase -> {
+                                mensajeError = "Falta configurar la conexión con el servidor. Contacta al responsable del proyecto."
+                            }
                             ResultadoLogin.Cancelado -> {
                                 mensajeError = ""
                             }
                             ResultadoLogin.Fallo -> {
-                                mensajeError = "No se pudo conectar para iniciar sesión. Revisa tu internet e intenta de nuevo."
+                                mensajeError = "No se pudo iniciar sesión. Inténtalo nuevamente. Si el problema continúa, revisa el registro de errores."
                             }
                         }
                         cargando = false
